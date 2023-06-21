@@ -21,7 +21,7 @@ def whats_new(session):
     div_with_ul = find_tag(main_div, 'div', attrs={'class': 'toctree-wrapper'})
     sections_by_python = div_with_ul.find_all('li',
                                               attrs={'class': 'toctree-l1'})
-    results = ('Ссылка на статью', 'Заголовок', 'Редактор, Автор')
+    results = [('Ссылка на статью', 'Заголовок', 'Редактор', 'Автор')]
     for section in tqdm(sections_by_python):
         version_a_tag = section.find('a')
         version_link = urljoin(whats_new_url, version_a_tag['href'])
