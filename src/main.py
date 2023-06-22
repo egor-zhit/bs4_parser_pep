@@ -1,22 +1,20 @@
 import logging
 import re
 from urllib.parse import urljoin
-from bs4 import BeautifulSoup
+from collections import defaultdict as DD
 
 import requests_cache
 from tqdm import tqdm
+
 from configs import configure_argument_parser, configure_logging
 from constants import BASE_DIR, MAIN_DOC_URL, PEP_DOC_URL
 from outputs import control_output
-from utils import find_tag, get_response
+from utils import counting_statuses, find_tag, find_tag_str, get_soup, mismatch
 
 
 def whats_new(session):
     whats_new_url = urljoin(MAIN_DOC_URL, 'whatsnew/')
-    response = get_response(session, whats_new_url)
-    if response is None:
-        return
-    soup = BeautifulSoup(response.text, features='lxml')
+    soup = get_soup(session, whats_new_url)
     main_div = find_tag(soup, 'section', attrs={'id': 'what-s-new-in-python'})
     div_with_ul = find_tag(main_div, 'div', attrs={'class': 'toctree-wrapper'})
     sections_by_python = div_with_ul.find_all('li',
@@ -25,24 +23,21 @@ def whats_new(session):
     for section in tqdm(sections_by_python):
         version_a_tag = section.find('a')
         version_link = urljoin(whats_new_url, version_a_tag['href'])
-        response = get_response(session, version_link)
-        if response is None:
+        try:
+            soup = get_soup(session, version_link)
+            h1 = find_tag(soup, 'h1')
+            dl = find_tag(soup, 'dl')
+            dl_text = dl.text.replace('\n', ' ')
+            results.append(
+                (version_link, h1.text, dl_text)
+            )
+        except ConnectionError:
             continue
-        soup = BeautifulSoup(response.text, 'lxml')
-        h1 = find_tag(soup, 'h1')
-        dl = find_tag(soup, 'dl')
-        dl_text = dl.text.replace('\n', ' ')
-        results.append(
-            (version_link, h1.text, dl_text)
-        )
     return results
 
 
 def latest_versions(session):
-    response = get_response(session, MAIN_DOC_URL)
-    if response is None:
-        return
-    soup = BeautifulSoup(response.text, 'lxml')
+    soup = get_soup(session, MAIN_DOC_URL)
     sidebar = find_tag(soup, 'div', attrs={'class': 'sphinxsidebarwrapper'})
     ul_tags = sidebar.find_all('ul')
     for ul in ul_tags:
@@ -68,10 +63,7 @@ def latest_versions(session):
 
 def download(session):
     downloads_url = urljoin(MAIN_DOC_URL, 'download.html')
-    response = get_response(session, downloads_url)
-    if response is None:
-        return
-    soup = BeautifulSoup(response.text, 'lxml')
+    soup = get_soup(session, downloads_url)
     main_tag = find_tag(soup, 'div', {'role': 'main'})
     table_tag = find_tag(main_tag, 'table', {'class': 'docutils'})
     pdf_a4_tag = find_tag(table_tag, 'a',
@@ -89,45 +81,29 @@ def download(session):
 
 
 def pep(session):
-    response = get_response(session, PEP_DOC_URL)
-    if response is None:
-        return
-    soup = BeautifulSoup(response.text, 'lxml')
+    soup = get_soup(session, PEP_DOC_URL)
     num_indx_section = find_tag(soup, 'section',
                                 attrs={'id': 'numerical-index'})
     tbody_tag = find_tag(num_indx_section, 'tbody')
     tr_tags = tbody_tag.find_all('tr')
-    statuses = {}
-    total_pep = 0
+    statuses = DD(counting_statuses)
     results = [('Статус', 'Количество')]
     for pep_ref in tqdm(tr_tags):
-        total_pep += 1
         status_tag = find_tag(pep_ref, 'abbr')
         status_list = status_tag['title'].split(', ')
         status_in_tabl = ''.join(status_list[1])
-        tag_a = pep_ref.find('a', string=re.compile(r'^\d+$'))
+        tag_a = find_tag_str(pep_ref, 'a', re.compile(r'^\d+$'))
         pep_url = urljoin(PEP_DOC_URL, tag_a['href'])
-        response = get_response(session, pep_url)
-        if response is None:
-            return
-        soup = BeautifulSoup(response.text, features='lxml')
+        soup = get_soup(session, pep_url)
         pep_content = find_tag(soup, 'section', attrs={'id': 'pep-content'})
         pep_dl = find_tag(pep_content, 'dl')
         status_on_url = find_tag(pep_dl, 'abbr').text
-        if status_on_url in statuses:
-            statuses[status_on_url] += 1
-        if status_on_url not in statuses:
-            statuses[status_on_url] = 1
+        counting_statuses(status_on_url, statuses)
         if status_on_url != status_in_tabl:
-            error_message = (f'Несовпадающие статусы:\n'
-                             f'{pep_url}\n'
-                             f'Статус в карточке: {status_on_url}\n'
-                             f'Ожидаемый статус: '
-                             f'{status_in_tabl}')
-            logging.warning(error_message)
+            mismatch(status_on_url, status_in_tabl, pep_url)
     for status in statuses:
         results.append((status, statuses[status]))
-    results.append(('Total', total_pep))
+    results.append(('Total', sum(statuses.values())))
     return results
 
 
